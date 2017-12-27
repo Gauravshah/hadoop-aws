@@ -4,6 +4,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Date;
@@ -18,7 +19,10 @@ import com.amazonaws.ClientConfiguration;
 import com.amazonaws.Protocol;
 import com.amazonaws.auth.AWSCredentialsProviderChain;
 
+import com.amazonaws.auth.BasicAWSCredentials;
 import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
+import com.amazonaws.regions.Region;
+import com.amazonaws.regions.Regions;
 import com.amazonaws.services.s3.AmazonS3Client;
 import com.amazonaws.services.s3.model.CannedAccessControlList;
 import com.amazonaws.services.s3.model.DeleteObjectRequest;
@@ -37,6 +41,7 @@ import com.amazonaws.event.ProgressListener;
 import com.amazonaws.event.ProgressEvent;
 
 import com.google.common.annotations.VisibleForTesting;
+import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.StringUtils;
 
 import org.apache.hadoop.conf.Configuration;
@@ -153,6 +158,23 @@ public class S3AFileSystem extends FileSystem {
     setConf(conf);
   }
 
+
+  /**
+   * truncate S3 style
+   * @param f
+   * @param newLength
+   * @return
+   * @throws IOException
+   */
+  public boolean truncate(Path f, final long newLength) throws IOException {
+    try(InputStream in = open(f)) {
+      try (OutputStream out = create(f)) {
+        IOUtils.copyLarge(in, out, 0, newLength);
+      }
+    }
+    return true;
+  }
+
   void initProxySupport(Configuration conf, ClientConfiguration awsConf,
                         boolean secureConnections) throws IllegalArgumentException,
       IllegalArgumentException {
@@ -201,6 +223,7 @@ public class S3AFileSystem extends FileSystem {
                                   AWSCredentialsProviderChain credentials, ClientConfiguration awsConf)
       throws IllegalArgumentException {
     s3 = new AmazonS3Client(credentials, awsConf);
+    s3.setRegion(Regions.getCurrentRegion());
     String endPoint = conf.getTrimmed(Constants.ENDPOINT,"");
     if (!endPoint.isEmpty()) {
       try {
@@ -337,9 +360,9 @@ public class S3AFileSystem extends FileSystem {
                                    Progressable progress) throws IOException {
     String key = pathToKey(f);
 
-    if (!overwrite && exists(f)) {
-      throw new FileAlreadyExistsException(f + " already exists");
-    }
+//    if (!overwrite && exists(f)) {
+//      throw new FileAlreadyExistsException(f + " already exists");
+//    }
     if (getConf().getBoolean(Constants.FAST_UPLOAD, Constants.DEFAULT_FAST_UPLOAD)) {
       return new FSDataOutputStream(new S3AFastOutputStream(s3, this, bucket,
           key, progress, statistics, cannedACL,
@@ -365,6 +388,36 @@ public class S3AFileSystem extends FileSystem {
   }
 
 
+  @Override
+  public boolean rename(Path src, Path dst) throws IOException {
+    int countdown = 10;
+    while (true){
+      try {
+        if (renameInternal(src, dst)) {
+          return true;
+        } else {
+          try {
+            Thread.sleep(10);
+          } catch (InterruptedException e) {
+            e.printStackTrace();
+          }
+          if (--countdown == 0) {
+            return false;
+          }
+        }
+      } catch (IOException e) {
+        try {
+          Thread.sleep(10);
+        } catch (InterruptedException e1) {
+          e1.printStackTrace();
+        }
+        if (--countdown == 0) {
+          throw e;
+        }
+      }
+    }
+  }
+
   /**
    * Renames Path src to Path dst.  Can take place on local fs
    * or remote DFS.
@@ -384,7 +437,7 @@ public class S3AFileSystem extends FileSystem {
    * @throws IOException on failure
    * @return true if rename is successful
    */
-  public boolean rename(Path src, Path dst) throws IOException {
+  public boolean renameInternal(Path src, Path dst) throws IOException {
     if (LOG.isDebugEnabled()) {
       LOG.debug("Rename path {} to {}", src, dst);
     }
