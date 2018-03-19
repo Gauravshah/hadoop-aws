@@ -223,7 +223,10 @@ public class S3AFileSystem extends FileSystem {
                                   AWSCredentialsProviderChain credentials, ClientConfiguration awsConf)
       throws IllegalArgumentException {
     s3 = new AmazonS3Client(credentials, awsConf);
-    s3.setRegion(Regions.getCurrentRegion());
+    Region region =  Regions.getCurrentRegion();
+    if(region!=null){
+        s3.setRegion(region);
+    }
     String endPoint = conf.getTrimmed(Constants.ENDPOINT,"");
     if (!endPoint.isEmpty()) {
       try {
